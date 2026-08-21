@@ -2,6 +2,7 @@ import type { AppState, SessionRecap, Stage } from "./types";
 import { FIRST_QUESTION_ID } from "../data/questions";
 
 const KEY = "kaikou-v1";
+const API_KEY = "kaikou-xai-key";
 
 const empty = (): AppState => ({
   lessonDone: false,
@@ -25,6 +26,20 @@ export function loadState(): AppState {
 
 export function saveState(state: AppState) {
   localStorage.setItem(KEY, JSON.stringify(state));
+}
+
+export function getApiKey(): string {
+  try {
+    return (localStorage.getItem(API_KEY) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+export function setApiKey(value: string) {
+  const next = value.trim();
+  if (!next) localStorage.removeItem(API_KEY);
+  else localStorage.setItem(API_KEY, next);
 }
 
 function dayStamp(iso: string): string {
