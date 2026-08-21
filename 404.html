@@ -11,7 +11,10 @@
   <body>
     <div id="root"></div>
     <script type="module">
-      const b64 = await (await fetch("./app.b64")).text();
+      let b64 = "";
+      for (let i = 0; i < 9; i++) {
+        b64 += await (await fetch("./chunks/" + i + ".b64")).text();
+      }
       const bin = atob(b64.trim());
       const bytes = new Uint8Array(bin.length);
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
