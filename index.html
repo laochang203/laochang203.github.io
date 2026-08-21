@@ -6,10 +6,20 @@
     <meta name="theme-color" content="#f3efe6" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <title>开口练</title>
-    <script type="module" crossorigin src="/assets/index-DD1SEeSM.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-Cm2v4NGl.css">
+    <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
     <div id="root"></div>
+    <script type="module">
+      let b64 = "";
+      for (let i = 0; i < 9; i++) {
+        b64 += await (await fetch("./chunks/" + i + ".b64")).text();
+      }
+      const bin = atob(b64.replace(/\s+/g, ""));
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: "text/javascript" }));
+      await import(url);
+    </script>
   </body>
 </html>
