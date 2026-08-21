@@ -5,22 +5,27 @@ on:
     branches: [main]
     paths:
       - src/**
+      - vite.index.html
       - package.json
       - vite.config.ts
       - tsconfig.json
       - .github/workflows/pages.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
   build:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
+      - name: Use Vite HTML entry
+        run: cp vite.index.html index.html
       - run: npm install
       - run: npx vite build
       - name: Copy dist to site root
