@@ -75,6 +75,28 @@ function parseCoach(raw: string, fallbackCheck: string[]): CoachNote | null {
   }
 }
 
+function wordCount(text: string): number {
+  return text.trim() ? text.trim().split(/\s+/).length : 0;
+}
+
+async function xaiTranscribe(audio: Blob, mime: string): Promise<string> {
+  const key = getApiKey();
+  if (!key) return "";
+  const ext = mime.includes("mp4") ? "m4a" : mime.includes("mpeg") ? "mp3" : "webm";
+  const form = new FormData();
+  form.append("language", "en");
+  form.append("format", "true");
+  form.append("file", audio, `take.${ext}`);
+  const res = await fetch("https://api.x.ai/v1/stt", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${key}` },
+    body: form,
+  });
+  if (!res.ok) return "";
+  const data = (await res.json()) as { text?: string };
+  return (data.text || "").trim();
+}
+
 async function xaiCoach(
   q: Question,
   m: AttemptMetrics,
@@ -121,14 +143,22 @@ export async function requestCoach(input: {
   question: Question;
   metrics: AttemptMetrics;
   attempt: number;
+  audio?: Blob;
   audioBase64?: string;
   mime?: string;
   previousTranscript?: string;
 }): Promise<{ coach: CoachNote; transcript: string; usedAi: boolean }> {
+  let transcript = input.metrics.transcript;
   try {
-    const fromXai = await xaiCoach(input.question, input.metrics, input.attempt, input.previousTranscript);
+    if (getApiKey() && wordCount(transcript) < 4 && input.audio) {
+      const heard = await xaiTranscribe(input.audio, input.mime || input.audio.type || "audio/webm");
+      if (heard) transcript = heard;
+    }
+    const metrics = { ...input.metrics, transcript };
+
+    const fromXai = await xaiCoach(input.question, metrics, input.attempt, input.previousTranscript);
     if (fromXai) {
-      return { usedAi: true, transcript: input.metrics.transcript, coach: fromXai };
+      return { usedAi: true, transcript, coach: fromXai };
     }
 
     const useAi = await serverHasKey();
@@ -137,7 +167,7 @@ export async function requestCoach(input: {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          transcript: input.metrics.transcript,
+          transcript,
           audioBase64: input.audioBase64,
           mime: input.mime,
           durationSec: input.metrics.durationSec,
@@ -158,7 +188,7 @@ export async function requestCoach(input: {
       if (data.ok && data.coach?.mainIssue && data.coach?.band7) {
         return {
           usedAi: true,
-          transcript: data.transcript || input.metrics.transcript,
+          transcript: data.transcript || transcript,
           coach: {
             ...data.coach,
             handleCheck: data.coach.handleCheck?.length ? data.coach.handleCheck : input.question.handleCheck,
@@ -172,8 +202,8 @@ export async function requestCoach(input: {
 
   return {
     usedAi: false,
-    transcript: input.metrics.transcript,
-    coach: localCoach(input.question, input.metrics, input.attempt),
+    transcript,
+    coach: localCoach(input.question, { ...input.metrics, transcript }, input.attempt),
   };
 }
 
