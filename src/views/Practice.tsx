@@ -53,10 +53,12 @@ export function Practice({ state, onFinished, onHome }: Props) {
         question,
         metrics,
         attempt: 1,
+        audio: rec.blob,
         audioBase64,
         mime: rec.mime,
       });
-      const merged = { ...metrics, transcript: out.transcript || metrics.transcript };
+      const text = out.transcript || metrics.transcript;
+      const merged = { ...analyzeAttempt(text, rec.durationSec, rec.frames), transcript: text };
       setUsedAi(out.usedAi);
       setCoach(out.coach);
       setTakes([{ rec, metrics: merged }]);
@@ -144,6 +146,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <h1>今天只练这一句结构，后面还要再说两到三遍。</h1>
           <Scaffold slots={slots} transcript={first.metrics.transcript} title={point} />
           <div className="chips">
+            <span className={usedAi ? "chip good" : "chip"}>{usedAi ? "评语来自模型" : "评语来自规则"}</span>
             <span className="chip">{first.metrics.wordCount} 词</span>
             <span className="chip">{first.metrics.durationSec}s</span>
             <span className="chip">最长停顿 {first.metrics.longestPauseSec}s</span>
