@@ -1,0 +1,40 @@
+name: Build site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - src/**
+      - package.json
+      - vite.config.ts
+      - tsconfig.json
+      - .github/workflows/pages.yml
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install
+      - run: npx vite build
+      - name: Copy dist to site root
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          rm -rf assets
+          cp dist/index.html ./index.html
+          cp dist/index.html ./404.html
+          cp -R dist/assets ./assets
+          git add index.html 404.html assets
+          if git diff --cached --quiet; then
+            echo "No site changes"
+          else
+            git commit -m "Publish built site"
+            git push
+          fi
