@@ -1,3 +1,4 @@
+import { getApiKey } from "./storage";
 import type { AttemptMetrics, CoachNote, Question } from "./types";
 
 function localCoach(q: Question, m: AttemptMetrics, attempt: number): CoachNote {
@@ -39,6 +40,69 @@ function localCoach(q: Question, m: AttemptMetrics, attempt: number): CoachNote 
   };
 }
 
+function coachPrompt(q: Question, m: AttemptMetrics, attempt: number, previousTranscript?: string): string {
+  return `You are an IELTS Speaking coach for a Band 5 Chinese learner aiming toward 7.
+Return ONLY JSON with keys:
+mainIssue (Chinese, one specific problem in this attempt),
+handle (Chinese, the ONE thing to change on the immediate retry),
+handleCheck (array of 1-3 lowercase English words/phrases that should appear next time, e.g. ["because","for example"]),
+band7 (English, 2-4 sentences: SAME life facts as the student, upgraded toward Band 7; do not invent a new job/story),
+learnLine (ONE short English sentence from band7, easy to shadow),
+strength (Chinese, one concrete good point; if the answer is tiny, praise showing up / finishing the recording),
+rangeNote (Chinese, very wide, e.g. "更接近 5 而不是 7；这不是官方分数，大约可能差一整档")
+
+Rules:
+- Do NOT give a precise band like 6.5.
+- One issue only. Prefer: too short, mid-sentence pauses, no because/example, translating from Chinese, not answering the question.
+- Attempt ${attempt}. Question: ${q.prompt} (${q.promptZh})
+- Duration ${m.durationSec}s, long pauses ${m.longPauseCount}, longest pause ${m.longestPauseSec}s, fillers ${m.fillerCount}.
+- Transcript: """${m.transcript || "(empty)"}"""
+- Previous transcript if any: """${previousTranscript || ""}"""`;
+}
+
+function parseCoach(raw: string, fallbackCheck: string[]): CoachNote | null {
+  const match = raw.match(/\{[\s\S]*\}/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[0]) as CoachNote;
+    if (!parsed.mainIssue || !parsed.band7) return null;
+    return {
+      ...parsed,
+      handleCheck: parsed.handleCheck?.length ? parsed.handleCheck : fallbackCheck,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function xaiCoach(
+  q: Question,
+  m: AttemptMetrics,
+  attempt: number,
+  previousTranscript?: string,
+): Promise<CoachNote | null> {
+  const key = getApiKey();
+  if (!key) return null;
+  const res = await fetch("https://api.x.ai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "grok-4.6",
+      temperature: 0.4,
+      messages: [
+        { role: "system", content: "You write terse IELTS speaking coaching JSON. No markdown." },
+        { role: "user", content: coachPrompt(q, m, attempt, previousTranscript) },
+      ],
+    }),
+  });
+  if (!res.ok) return null;
+  const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
+  return parseCoach(data.choices?.[0]?.message?.content || "", q.handleCheck);
+}
+
 let hasServerKey: boolean | null = null;
 
 async function serverHasKey(): Promise<boolean> {
@@ -62,38 +126,45 @@ export async function requestCoach(input: {
   previousTranscript?: string;
 }): Promise<{ coach: CoachNote; transcript: string; usedAi: boolean }> {
   try {
+    const fromXai = await xaiCoach(input.question, input.metrics, input.attempt, input.previousTranscript);
+    if (fromXai) {
+      return { usedAi: true, transcript: input.metrics.transcript, coach: fromXai };
+    }
+
     const useAi = await serverHasKey();
-    const res = await fetch("/api/coach", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        transcript: input.metrics.transcript,
-        audioBase64: useAi ? input.audioBase64 : undefined,
-        mime: input.mime,
-        durationSec: input.metrics.durationSec,
-        longPauseCount: input.metrics.longPauseCount,
-        longestPauseSec: input.metrics.longestPauseSec,
-        fillerCount: input.metrics.fillerCount,
-        question: input.question.prompt,
-        questionZh: input.question.promptZh,
-        attempt: input.attempt,
-        previousTranscript: input.previousTranscript,
-      }),
-    });
-    const data = (await res.json()) as {
-      ok?: boolean;
-      transcript?: string;
-      coach?: CoachNote;
-    };
-    if (data.ok && data.coach?.mainIssue && data.coach?.band7) {
-      return {
-        usedAi: true,
-        transcript: data.transcript || input.metrics.transcript,
-        coach: {
-          ...data.coach,
-          handleCheck: data.coach.handleCheck?.length ? data.coach.handleCheck : input.question.handleCheck,
-        },
+    if (useAi) {
+      const res = await fetch("/api/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript: input.metrics.transcript,
+          audioBase64: input.audioBase64,
+          mime: input.mime,
+          durationSec: input.metrics.durationSec,
+          longPauseCount: input.metrics.longPauseCount,
+          longestPauseSec: input.metrics.longestPauseSec,
+          fillerCount: input.metrics.fillerCount,
+          question: input.question.prompt,
+          questionZh: input.question.promptZh,
+          attempt: input.attempt,
+          previousTranscript: input.previousTranscript,
+        }),
+      });
+      const data = (await res.json()) as {
+        ok?: boolean;
+        transcript?: string;
+        coach?: CoachNote;
       };
+      if (data.ok && data.coach?.mainIssue && data.coach?.band7) {
+        return {
+          usedAi: true,
+          transcript: data.transcript || input.metrics.transcript,
+          coach: {
+            ...data.coach,
+            handleCheck: data.coach.handleCheck?.length ? data.coach.handleCheck : input.question.handleCheck,
+          },
+        };
+      }
     }
   } catch {
     /* local fallback */

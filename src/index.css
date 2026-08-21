@@ -232,6 +232,18 @@ ul { margin: 0 0 12px; padding-left: 1.1em; color: var(--muted); line-height: 1.
 
 .error { color: #9a2b2b; font-size: 13px; }
 
+.key-input {
+  width: 100%;
+  margin: 8px 0 4px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+}
+a { color: var(--accent-dark); }
+
 @media (max-width: 520px) {
   .prompt { font-size: 22px; }
   .compare { grid-template-columns: 1fr; }
