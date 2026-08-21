@@ -105,7 +105,7 @@ export function Home({ state, onLesson, onPractice }: Props) {
           )}
         </div>
         {note && <p className="note">{note}</p>}
-        <p className="note">别把钥匙发截图。换手机或清浏览器缓存要重新贴。额度用完或连不上，会自动退回规则。</p>
+        <p className="note">别把钥匙发截图。手机和电脑是两台设备，要各贴一次。清缓存也要重新贴。额度用完或连不上，会自动退回规则。</p>
       </div>
     </>
   );
