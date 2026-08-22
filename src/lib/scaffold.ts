@@ -43,3 +43,26 @@ export function knowledgeTitle(question: Question): string {
   if (question.part === 3) return "表态 + because + On the other hand";
   return KNOWLEDGE;
 }
+
+export function missingSlots(transcript: string, slots: ScaffoldSlot[]): ScaffoldSlot[] {
+  return slotHits(transcript, slots).filter((h) => !h.hit).map((h) => h.slot);
+}
+
+export function nextSpeakLine(
+  transcript: string,
+  slots: ScaffoldSlot[],
+  coach: { learnLine: string; band7: string },
+): string {
+  const miss = missingSlots(transcript, slots)[0];
+  const parts = coach.band7.split(/(?<=\.)\s+/).map((s) => s.trim()).filter(Boolean);
+  if (!miss) return coach.learnLine;
+  if (miss.check) {
+    const needle = miss.check.toLowerCase();
+    const fromBand = parts.find((s) => s.toLowerCase().includes(needle));
+    if (fromBand) return fromBand;
+    if (coach.learnLine.toLowerCase().includes(needle)) return coach.learnLine;
+  } else if (parts[0]) {
+    return parts[0];
+  }
+  return miss.cue;
+}
