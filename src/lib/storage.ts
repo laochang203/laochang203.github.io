@@ -3,6 +3,7 @@ import { FIRST_QUESTION_ID } from "../data/questions";
 
 const KEY = "kaikou-v1";
 const API_KEY = "kaikou-xai-key";
+const TTS_KEY = "kaikou-tts-xai";
 
 const empty = (): AppState => ({
   lessonDone: false,
@@ -42,6 +43,45 @@ export function setApiKey(value: string) {
   else localStorage.setItem(API_KEY, next);
 }
 
+export function getTtsXai(): boolean {
+  try {
+    const raw = localStorage.getItem(TTS_KEY);
+    if (raw === null) return true;
+    return raw === "1";
+  } catch {
+    return true;
+  }
+}
+
+export function setTtsXai(on: boolean) {
+  localStorage.setItem(TTS_KEY, on ? "1" : "0");
+}
+
+export async function testApiKey(): Promise<string> {
+  const key = getApiKey();
+  if (!key) return "还没贴钥匙。";
+  try {
+    const res = await fetch("https://api.x.ai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "grok-4.6",
+        temperature: 0,
+        messages: [{ role: "user", content: "Reply with only: ok" }],
+      }),
+    });
+    if (res.ok) return "钥匙通了。第一遍点评会走模型，大约不到 1 分钱。";
+    if (res.status === 401 || res.status === 403) return "钥匙无效，重新贴一次。";
+    if (res.status === 429) return "额度或频率不够了，先走规则也行。";
+    return `连不上（${res.status}）。检查 VPN 后再测。`;
+  } catch {
+    return "连不上 api.x.ai。检查 VPN 后再测。";
+  }
+}
+
 function dayStamp(iso: string): string {
   return iso.slice(0, 10);
 }
@@ -79,6 +119,7 @@ export function applySession(state: AppState, recap: SessionRecap, passed: boole
   if (stage === 0 && (status === "passed-once" || status === "stable")) stage = 1;
   if (stableCount >= 8 && stage < 2) stage = 2;
   if (stableCount >= 11 && stage < 3) stage = 3;
+  if (stableCount >= 14 && stage < 4) stage = 4;
 
   return {
     ...state,
