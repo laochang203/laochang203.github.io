@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { NextGuide } from "../components/NextGuide";
 import { RecordPanel } from "../components/RecordPanel";
 import { Scaffold } from "../components/Scaffold";
 import { TranscriptView } from "../components/TranscriptView";
@@ -6,7 +7,7 @@ import { blobToBase64, speakEnglish, type RecordingResult } from "../lib/audio";
 import { analyzeAttempt } from "../lib/analyze";
 import { compareText, requestCoach } from "../lib/coach";
 import { pickToday } from "../lib/pick";
-import { knowledgeTitle, knowledgeUsed, slotsFor } from "../lib/scaffold";
+import { knowledgeTitle, knowledgeUsed, missingSlots, nextSpeakLine, slotsFor } from "../lib/scaffold";
 import type { AppState, AttemptMetrics, CoachNote, SessionRecap } from "../lib/types";
 
 type Step = "shadow" | "speak1" | "wait" | "feedback" | "drill" | "check" | "recap";
@@ -156,6 +157,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <div className="issue">
             <strong>主要问题</strong>
             {coach.mainIssue}
+            {coach.handle ? <p style={{ margin: "8px 0 0", color: "var(--ink)" }}>下一遍只改这一件：{coach.handle}</p> : null}
           </div>
           <div className="band7">
             <div className="kicker" style={{ color: "var(--good)" }}>照这个架子说，内容换成你自己的</div>
@@ -163,6 +165,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
             <p className="en" style={{ marginBottom: 8 }}><strong>先跟读这一句：</strong> {coach.learnLine}</p>
             <button className="btn ghost" type="button" onClick={() => speakEnglish(coach.learnLine)}>听要学的那一句</button>
           </div>
+          {coach.rangeNote ? <p className="note">{coach.rangeNote}</p> : null}
           <div className="row">
             <button className="btn accent block" type="button" onClick={() => setStep("drill")}>
               看着三格再说一遍
@@ -177,12 +180,12 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <p className="zh">{question.promptZh}</p>
           <h2 className="en prompt" style={{ fontSize: 22 }}>{question.prompt}</h2>
           <Scaffold slots={slots} transcript={last?.metrics.transcript} title={`开口时盯着这三格 · ${point}`} />
-          <div className="band7" style={{ marginTop: 12 }}>
-            <div className="kicker" style={{ color: "var(--good)" }}>可以偷这一句的架子，不要整段背</div>
-            <p className="en">{coach.learnLine}</p>
-            <button className="btn ghost" type="button" onClick={() => speakEnglish(coach.learnLine)}>再听一句</button>
-          </div>
-          <p className="note">录音时三格还在上面。缺「还没有」的那一格，这一遍必须说出来。</p>
+          <NextGuide
+            complete={Boolean(last && knowledgeUsed(last.metrics, slots))}
+            missing={last ? missingSlots(last.metrics.transcript, slots) : slots}
+            line={last ? nextSpeakLine(last.metrics.transcript, slots, coach) : coach.learnLine}
+          />
+          <p className="note">录音时三格还在上面。缺的那一格这一遍必须说出来。</p>
           <RecordPanel
             labelStart={n === 1 ? "开始第二遍" : n === 2 ? "开始第三遍" : "开始第四遍"}
             labelStop="说完了"
@@ -191,7 +194,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
         </div>
       )}
 
-      {step === "check" && last && coach && (
+      {step === "check" && last && coach && first && (
         <div className="hero">
           <div className="kicker">第 {n} 遍对过没有</div>
           <h1>{knowledgeUsed(last.metrics, slots) ? "结构用上了。" : "结构还没齐，再来。"}</h1>
@@ -199,12 +202,19 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <p>{compareText(first.metrics, last.metrics, coach.handleCheck)}</p>
           <audio controls src={last.rec.url} style={{ width: "100%", margin: "8px 0 12px" }} />
           <TranscriptView metrics={last.metrics} />
+          <NextGuide
+            complete={knowledgeUsed(last.metrics, slots)}
+            missing={missingSlots(last.metrics.transcript, slots)}
+            line={nextSpeakLine(last.metrics.transcript, slots, coach)}
+          />
           <div className="row">
             {canStop() ? (
               <button className="btn accent" type="button" onClick={finish}>看今天小结</button>
             ) : (
               <button className="btn accent" type="button" onClick={() => setStep("drill")}>
-                {knowledgeUsed(last.metrics, slots) ? "再用自己的例子巩固一遍" : "缺的那一格，再录一遍"}
+                {knowledgeUsed(last.metrics, slots)
+                  ? "再用自己的例子巩固一遍"
+                  : `再说一遍，先开口 ${missingSlots(last.metrics.transcript, slots)[0]?.cue ?? "缺的那一格"}`}
               </button>
             )}
             {n >= 3 && !canStop() && (
