@@ -1,3 +1,5 @@
+import { getApiKey, getTtsXai } from "./storage";
+
 export type EnergyFrame = { t: number; rms: number };
 
 export type RecordingResult = {
@@ -98,7 +100,7 @@ export async function recordAudio(
   return done;
 }
 
-export function speakEnglish(text: string): Promise<void> {
+function speakBrowser(text: string): Promise<void> {
   return new Promise((resolve) => {
     window.speechSynthesis.cancel();
     const u = new SpeechSynthesisUtterance(text);
@@ -113,6 +115,48 @@ export function speakEnglish(text: string): Promise<void> {
     u.onerror = () => resolve();
     window.speechSynthesis.speak(u);
   });
+}
+
+async function speakXai(text: string): Promise<boolean> {
+  const key = getApiKey();
+  if (!key) return false;
+  const res = await fetch("https://api.x.ai/v1/tts", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ text, voice_id: "eve", language: "en" }),
+  });
+  if (!res.ok) return false;
+  const buf = await res.arrayBuffer();
+  const url = URL.createObjectURL(new Blob([buf], { type: res.headers.get("content-type") || "audio/mpeg" }));
+  return new Promise((resolve) => {
+    const audio = new Audio(url);
+    audio.onended = () => {
+      URL.revokeObjectURL(url);
+      resolve(true);
+    };
+    audio.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(false);
+    };
+    void audio.play().catch(() => {
+      URL.revokeObjectURL(url);
+      resolve(false);
+    });
+  });
+}
+
+export async function speakEnglish(text: string): Promise<void> {
+  if (getApiKey() && getTtsXai()) {
+    try {
+      if (await speakXai(text)) return;
+    } catch {
+      /* fall through */
+    }
+  }
+  return speakBrowser(text);
 }
 
 export async function blobToBase64(blob: Blob): Promise<string> {
