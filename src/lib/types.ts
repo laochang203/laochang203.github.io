@@ -41,6 +41,8 @@ export type AttemptMetrics = {
   tokens: TranscriptToken[];
 };
 
+export type Light = "green" | "yellow" | "red";
+
 export type CoachNote = {
   mainIssue: string;
   handle: string;
@@ -49,6 +51,9 @@ export type CoachNote = {
   learnLine: string;
   strength: string;
   rangeNote: string;
+  traps: string[];
+  pronunciationNote: string;
+  lights: { fluency: Light; lexical: Light; grammar: Light; pronunciation: Light };
 };
 
 export type QuestionProgress = {
