@@ -1,5 +1,72 @@
 import { getApiKey } from "./storage";
-import type { AttemptMetrics, CoachNote, Question } from "./types";
+import type { AttemptMetrics, CoachNote, Light, Question } from "./types";
+
+function wordCount(text: string): number {
+  return text.trim() ? text.trim().split(/\s+/).length : 0;
+}
+
+function ruleLights(m: AttemptMetrics): CoachNote["lights"] {
+  const fluency: Light = m.durationSec < 8 || m.wordCount < 8 ? "red" : m.longestPauseSec >= 1.2 || m.longPauseCount >= 2 ? "yellow" : "green";
+  const lexical: Light = m.hasBecause && m.hasExample ? "green" : m.hasBecause || m.hasExample ? "yellow" : "red";
+  const grammar: Light = m.sentenceLike >= 2 ? "green" : m.wordCount >= 8 ? "yellow" : "red";
+  const pronunciation: Light = m.wordCount === 0 ? "red" : m.wordCount < 8 ? "yellow" : "green";
+  return { fluency, lexical, grammar, pronunciation };
+}
+
+function rulePronunciation(m: AttemptMetrics): string {
+  if (m.wordCount === 0) return "机器没听清词。靠近麦克风，一个词说完再停。";
+  if (m.longestPauseSec >= 1.2) return "词中间停太长，听起来像卡在发音上。想到哪个音先说完这个词。";
+  return "发音先求能听懂，不要为了快而吞音。";
+}
+
+function ruleTraps(m: AttemptMetrics): string[] {
+  const traps = [];
+  if (!m.hasBecause) traps.push("下一遍必须说出 because，再接一个原因。");
+  if (!m.hasExample) traps.push("例子要用 For example + 上周/昨天做过的一件具体事。");
+  if (m.longestPauseSec >= 1.2) traps.push("别在句子中间停去想中文。");
+  if (traps.length === 0) traps.push("保留 because 和 For example，把例子换成更具体的一件事。");
+  return traps.slice(0, 2);
+}
+
+function ensureMarkers(note: CoachNote, q: Question, transcript: string): CoachNote {
+  let band7 = note.band7.trim();
+  const lower = band7.toLowerCase();
+  const checks = q.handleCheck.length ? q.handleCheck : ["because", "for example"];
+  for (const c of checks) {
+    const n = c.toLowerCase();
+    if (n === "because" && !/\bbecause\b/.test(lower)) {
+      band7 += " I chose this because it fits my real life.";
+    }
+    if ((n === "for example" || n === "for instance") && !/for example|for instance/.test(lower)) {
+      band7 += transcript.trim()
+        ? " For example, I can talk about a specific class or day last week."
+        : " For example, last week I did this in class.";
+    }
+    if (n.includes("other hand") && !/on the other hand/.test(lower)) {
+      band7 += " On the other hand, you still have to practise alone.";
+    }
+  }
+  let learnLine = (note.learnLine || "").trim();
+  const miss = checks.find((c) => !learnLine.toLowerCase().includes(c.toLowerCase()));
+  if (miss) {
+    const parts = band7.split(/(?<=\.)\s+/).map((s) => s.trim()).filter(Boolean);
+    learnLine = parts.find((s) => s.toLowerCase().includes(miss.toLowerCase())) || parts[parts.length - 1] || learnLine;
+  }
+  return {
+    ...note,
+    band7,
+    learnLine,
+    traps: (note.traps || []).filter(Boolean).slice(0, 2),
+    pronunciationNote: note.pronunciationNote || "发音先求能听懂，一个词说完再停。",
+    lights: note.lights || {
+      fluency: "yellow",
+      lexical: "yellow",
+      grammar: "yellow",
+      pronunciation: "yellow",
+    },
+    handleCheck: note.handleCheck?.length ? note.handleCheck : q.handleCheck,
+  };
+}
 
 function localCoach(q: Question, m: AttemptMetrics, attempt: number): CoachNote {
   const short = m.wordCount < 12 || m.durationSec < 12;
@@ -17,7 +84,7 @@ function localCoach(q: Question, m: AttemptMetrics, attempt: number): CoachNote 
   } else if (m.fillerCount >= 3) {
     mainIssue = "口头禅有点多，流利度会被拖住。";
     handle = "第二遍允许慢，但少说 um / uh，用停半拍代替。";
-  } else if (attempt === 2) {
+  } else if (attempt >= 2) {
     mainIssue = "方向对了，还要再自然一点，别只堆句型。";
     handle = "保留 because，把例子换成你自己上周或昨天做过的事。";
   }
@@ -29,57 +96,58 @@ function localCoach(q: Question, m: AttemptMetrics, attempt: number): CoachNote 
         ? "已经不只一句，开头能听出你在答题。"
         : "你开口了，机器也录到了，下一步只加长一点。";
 
-  return {
+  const raw: CoachNote = {
     mainIssue,
     handle,
     handleCheck: q.handleCheck,
     band7: q.band7,
-    learnLine: q.band7.split(/(?<=\.)\s+/)[1] || q.shadow,
+    learnLine: q.band7.split(/(?<=\.)\s+/).find((s) => /for example|because/i.test(s)) || q.shadow,
     strength,
     rangeNote: "这段更接近 5 而不是 7。这不是官方分数，大概可能差一整档。",
+    traps: ruleTraps(m),
+    pronunciationNote: rulePronunciation(m),
+    lights: ruleLights(m),
   };
+  return ensureMarkers(raw, q, m.transcript);
 }
 
 function coachPrompt(q: Question, m: AttemptMetrics, attempt: number, previousTranscript?: string): string {
+  const marks = q.handleCheck.join(", ");
   return `You are an IELTS Speaking coach for a Band 5 Chinese learner aiming toward 7.
 Return ONLY JSON with keys:
-mainIssue (Chinese, one specific problem in this attempt),
-handle (Chinese, the ONE thing to change on the immediate retry),
-handleCheck (array of 1-3 lowercase English words/phrases that should appear next time, e.g. ["because","for example"]),
-band7 (English, 2-4 sentences: SAME life facts as the student, upgraded toward Band 7; do not invent a new job/story),
-learnLine (ONE short English sentence from band7, easy to shadow),
-strength (Chinese, one concrete good point; if the answer is tiny, praise showing up / finishing the recording),
-rangeNote (Chinese, very wide, e.g. "更接近 5 而不是 7；这不是官方分数，大约可能差一整档")
+mainIssue (Chinese, one specific problem),
+handle (Chinese, the ONE thing to change next),
+handleCheck (array of 1-3 lowercase English phrases that MUST appear, e.g. ["because","for example"]),
+band7 (English, 2-4 sentences: SAME life facts as the student; MUST include these markers: ${marks}. Do not invent a new school/job/story),
+learnLine (ONE short English sentence from band7 that contains the missing marker, easy to shadow),
+strength (Chinese, one concrete good point),
+rangeNote (Chinese, wide, e.g. "更接近 5 而不是 7；不是官方分数"),
+traps (array of exactly 2 short Chinese warnings for the NEXT takes, e.g. pause mid-word / missing For example),
+pronunciationNote (Chinese, one line: what was hard to hear / how to land sounds; not a band score),
+lights (object fluency, lexical, grammar, pronunciation each "green"|"yellow"|"red"; never invent 6.5)
 
 Rules:
 - Do NOT give a precise band like 6.5.
-- One issue only. Prefer: too short, mid-sentence pauses, no because/example, translating from Chinese, not answering the question.
 - Attempt ${attempt}. Question: ${q.prompt} (${q.promptZh})
 - Duration ${m.durationSec}s, long pauses ${m.longPauseCount}, longest pause ${m.longestPauseSec}s, fillers ${m.fillerCount}.
 - Transcript: """${m.transcript || "(empty)"}"""
-- Previous transcript if any: """${previousTranscript || ""}"""`;
+- Previous transcript if any: """${previousTranscript || ""}"""
+- If attempt is 2, keep the same life facts as the previous transcript.`;
 }
 
-function parseCoach(raw: string, fallbackCheck: string[]): CoachNote | null {
+function parseCoach(raw: string, q: Question, transcript: string): CoachNote | null {
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) return null;
   try {
     const parsed = JSON.parse(match[0]) as CoachNote;
     if (!parsed.mainIssue || !parsed.band7) return null;
-    return {
-      ...parsed,
-      handleCheck: parsed.handleCheck?.length ? parsed.handleCheck : fallbackCheck,
-    };
+    return ensureMarkers(parsed, q, transcript);
   } catch {
     return null;
   }
 }
 
-function wordCount(text: string): number {
-  return text.trim() ? text.trim().split(/\s+/).length : 0;
-}
-
-async function xaiTranscribe(audio: Blob, mime: string): Promise<string> {
+export async function xaiTranscribe(audio: Blob, mime: string): Promise<string> {
   const key = getApiKey();
   if (!key) return "";
   const ext = mime.includes("mp4") ? "m4a" : mime.includes("mpeg") ? "mp3" : "webm";
@@ -122,21 +190,7 @@ async function xaiCoach(
   });
   if (!res.ok) return null;
   const data = (await res.json()) as { choices?: { message?: { content?: string } }[] };
-  return parseCoach(data.choices?.[0]?.message?.content || "", q.handleCheck);
-}
-
-let hasServerKey: boolean | null = null;
-
-async function serverHasKey(): Promise<boolean> {
-  if (hasServerKey !== null) return hasServerKey;
-  try {
-    const res = await fetch("/api/status");
-    const data = (await res.json()) as { hasKey?: boolean };
-    hasServerKey = Boolean(data.hasKey);
-  } catch {
-    hasServerKey = false;
-  }
-  return hasServerKey;
+  return parseCoach(data.choices?.[0]?.message?.content || "", q, m.transcript);
 }
 
 export async function requestCoach(input: {
@@ -144,11 +198,12 @@ export async function requestCoach(input: {
   metrics: AttemptMetrics;
   attempt: number;
   audio?: Blob;
-  audioBase64?: string;
   mime?: string;
   previousTranscript?: string;
+  allowModel?: boolean;
 }): Promise<{ coach: CoachNote; transcript: string; usedAi: boolean }> {
   let transcript = input.metrics.transcript;
+  const allowModel = input.allowModel !== false;
   try {
     if (getApiKey() && wordCount(transcript) < 4 && input.audio) {
       const heard = await xaiTranscribe(input.audio, input.mime || input.audio.type || "audio/webm");
@@ -156,44 +211,10 @@ export async function requestCoach(input: {
     }
     const metrics = { ...input.metrics, transcript };
 
-    const fromXai = await xaiCoach(input.question, metrics, input.attempt, input.previousTranscript);
-    if (fromXai) {
-      return { usedAi: true, transcript, coach: fromXai };
-    }
-
-    const useAi = await serverHasKey();
-    if (useAi) {
-      const res = await fetch("/api/coach", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          transcript,
-          audioBase64: input.audioBase64,
-          mime: input.mime,
-          durationSec: input.metrics.durationSec,
-          longPauseCount: input.metrics.longPauseCount,
-          longestPauseSec: input.metrics.longestPauseSec,
-          fillerCount: input.metrics.fillerCount,
-          question: input.question.prompt,
-          questionZh: input.question.promptZh,
-          attempt: input.attempt,
-          previousTranscript: input.previousTranscript,
-        }),
-      });
-      const data = (await res.json()) as {
-        ok?: boolean;
-        transcript?: string;
-        coach?: CoachNote;
-      };
-      if (data.ok && data.coach?.mainIssue && data.coach?.band7) {
-        return {
-          usedAi: true,
-          transcript: data.transcript || transcript,
-          coach: {
-            ...data.coach,
-            handleCheck: data.coach.handleCheck?.length ? data.coach.handleCheck : input.question.handleCheck,
-          },
-        };
+    if (allowModel && wordCount(transcript) >= 4 && input.attempt <= 2) {
+      const fromXai = await xaiCoach(input.question, metrics, input.attempt, input.previousTranscript);
+      if (fromXai) {
+        return { usedAi: true, transcript, coach: fromXai };
       }
     }
   } catch {
