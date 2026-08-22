@@ -1,16 +1,17 @@
 import { useMemo, useState } from "react";
 import { NextGuide } from "../components/NextGuide";
+import { PinnedCoach } from "../components/PinnedCoach";
 import { RecordPanel } from "../components/RecordPanel";
 import { Scaffold } from "../components/Scaffold";
 import { TranscriptView } from "../components/TranscriptView";
-import { blobToBase64, speakEnglish, type RecordingResult } from "../lib/audio";
+import { speakEnglish, type RecordingResult } from "../lib/audio";
 import { analyzeAttempt } from "../lib/analyze";
-import { compareText, requestCoach } from "../lib/coach";
+import { compareText, requestCoach, xaiTranscribe } from "../lib/coach";
 import { pickToday } from "../lib/pick";
 import { knowledgeTitle, knowledgeUsed, missingSlots, nextSpeakLine, slotsFor } from "../lib/scaffold";
 import type { AppState, AttemptMetrics, CoachNote, SessionRecap } from "../lib/types";
 
-type Step = "shadow" | "speak1" | "wait" | "feedback" | "drill" | "check" | "recap";
+type Step = "speak1" | "wait" | "feedback" | "drill" | "check" | "recap";
 
 type Take = { rec: RecordingResult; metrics: AttemptMetrics };
 
@@ -27,7 +28,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
   const slots = useMemo(() => slotsFor(question), [question]);
   const point = knowledgeTitle(question);
   const target = reduced ? Math.max(12, Math.round(question.targetSeconds / 2)) : question.targetSeconds;
-  const [step, setStep] = useState<Step>("shadow");
+  const [step, setStep] = useState<Step>("speak1");
   const [takes, setTakes] = useState<Take[]>([]);
   const [coach, setCoach] = useState<CoachNote | null>(null);
   const [usedAi, setUsedAi] = useState(false);
@@ -42,12 +43,6 @@ export function Practice({ state, onFinished, onHome }: Props) {
     const metrics = analyzeAttempt(transcript, rec.durationSec, rec.frames);
     setBusy("正在听你这一遍…");
     setStep("wait");
-    let audioBase64: string | undefined;
-    try {
-      audioBase64 = await blobToBase64(rec.blob);
-    } catch {
-      audioBase64 = undefined;
-    }
 
     if (takes.length === 0) {
       const out = await requestCoach({
@@ -55,8 +50,8 @@ export function Practice({ state, onFinished, onHome }: Props) {
         metrics,
         attempt: 1,
         audio: rec.blob,
-        audioBase64,
         mime: rec.mime,
+        allowModel: true,
       });
       const text = out.transcript || metrics.transcript;
       const merged = { ...analyzeAttempt(text, rec.durationSec, rec.frames), transcript: text };
@@ -64,8 +59,32 @@ export function Practice({ state, onFinished, onHome }: Props) {
       setCoach(out.coach);
       setTakes([{ rec, metrics: merged }]);
       setStep("feedback");
+    } else if (takes.length === 1) {
+      const out = await requestCoach({
+        question,
+        metrics,
+        attempt: 2,
+        audio: rec.blob,
+        mime: rec.mime,
+        previousTranscript: takes[0].metrics.transcript,
+        allowModel: true,
+      });
+      const text = out.transcript || metrics.transcript;
+      const merged = { ...analyzeAttempt(text, rec.durationSec, rec.frames), transcript: text };
+      if (out.usedAi) {
+        setUsedAi(true);
+        setCoach(out.coach);
+      }
+      setTakes((prev) => [...prev, { rec, metrics: merged }]);
+      setStep("check");
     } else {
-      setTakes((prev) => [...prev, { rec, metrics }]);
+      let text = metrics.transcript;
+      if ((text.trim().split(/\s+/).filter(Boolean).length < 4) && rec.blob.size > 0) {
+        const heard = await xaiTranscribe(rec.blob, rec.mime);
+        if (heard) text = heard;
+      }
+      const merged = { ...analyzeAttempt(text, rec.durationSec, rec.frames), transcript: text };
+      setTakes((prev) => [...prev, { rec, metrics: merged }]);
       setStep("check");
     }
     setBusy("");
@@ -111,25 +130,13 @@ export function Practice({ state, onFinished, onHome }: Props) {
         {coach ? (usedAi ? " · 评语来自模型" : " · 评语来自规则") : ""}
       </p>
 
-      {step === "shadow" && (
+      {step === "speak1" && (
         <header className="hero">
-          <div className="kicker">先跟读</div>
+          <div className="kicker">第一遍 · 先按自己的真实情况说</div>
           <h1 className="en prompt">{question.prompt}</h1>
           <p>{question.promptZh}</p>
           {question.bullets && <ul>{question.bullets.map((b) => <li key={b}>{b}</li>)}</ul>}
-          <p className="en">{question.shadow}</p>
-          <div className="row">
-            <button className="btn ghost" type="button" onClick={() => speakEnglish(question.shadow)}>听示范</button>
-            <button className="btn accent" type="button" onClick={() => setStep("speak1")}>跟读过了，自己说</button>
-          </div>
-        </header>
-      )}
-
-      {step === "speak1" && (
-        <header className="hero">
-          <div className="kicker">第一遍 · 先暴露问题</div>
-          <h1 className="en prompt">{question.prompt}</h1>
-          <p>这遍可以随便说，用来看你缺哪一块。后面几遍会把结构钉在屏幕上。</p>
+          <p>这遍不给范文、不给三格。说你自己的事。说完再告诉你缺哪一块。</p>
           <RecordPanel labelStart="开始说" labelStop="说完了" onFinished={(r, t) => void afterRecord(r, t)} />
         </header>
       )}
@@ -147,25 +154,13 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <h1>今天只练这一句结构，后面还要再说两到三遍。</h1>
           <Scaffold slots={slots} transcript={first.metrics.transcript} title={point} />
           <div className="chips">
-            <span className={usedAi ? "chip good" : "chip"}>{usedAi ? "评语来自模型" : "评语来自规则"}</span>
             <span className="chip">{first.metrics.wordCount} 词</span>
             <span className="chip">{first.metrics.durationSec}s</span>
             <span className="chip">最长停顿 {first.metrics.longestPauseSec}s</span>
           </div>
           <audio controls src={first.rec.url} style={{ width: "100%", margin: "8px 0 12px" }} />
           <TranscriptView metrics={first.metrics} />
-          <div className="issue">
-            <strong>主要问题</strong>
-            {coach.mainIssue}
-            {coach.handle ? <p style={{ margin: "8px 0 0", color: "var(--ink)" }}>下一遍只改这一件：{coach.handle}</p> : null}
-          </div>
-          <div className="band7">
-            <div className="kicker" style={{ color: "var(--good)" }}>照这个架子说，内容换成你自己的</div>
-            <p className="en" style={{ marginBottom: 8 }}>{coach.band7}</p>
-            <p className="en" style={{ marginBottom: 8 }}><strong>先跟读这一句：</strong> {coach.learnLine}</p>
-            <button className="btn ghost" type="button" onClick={() => speakEnglish(coach.learnLine)}>听要学的那一句</button>
-          </div>
-          {coach.rangeNote ? <p className="note">{coach.rangeNote}</p> : null}
+          <PinnedCoach coach={coach} usedAi={usedAi} />
           <div className="row">
             <button className="btn accent block" type="button" onClick={() => setStep("drill")}>
               看着三格再说一遍
@@ -180,12 +175,13 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <p className="zh">{question.promptZh}</p>
           <h2 className="en prompt" style={{ fontSize: 22 }}>{question.prompt}</h2>
           <Scaffold slots={slots} transcript={last?.metrics.transcript} title={`开口时盯着这三格 · ${point}`} />
+          <PinnedCoach coach={coach} usedAi={usedAi} />
           <NextGuide
             complete={Boolean(last && knowledgeUsed(last.metrics, slots))}
             missing={last ? missingSlots(last.metrics.transcript, slots) : slots}
             line={last ? nextSpeakLine(last.metrics.transcript, slots, coach) : coach.learnLine}
           />
-          <p className="note">录音时三格还在上面。缺的那一格这一遍必须说出来。</p>
+          <p className="note">对照上面两个易错点。缺的那一格这一遍必须说出来。不要背整段范文。</p>
           <RecordPanel
             labelStart={n === 1 ? "开始第二遍" : n === 2 ? "开始第三遍" : "开始第四遍"}
             labelStop="说完了"
@@ -202,6 +198,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <p>{compareText(first.metrics, last.metrics, coach.handleCheck)}</p>
           <audio controls src={last.rec.url} style={{ width: "100%", margin: "8px 0 12px" }} />
           <TranscriptView metrics={last.metrics} />
+          <PinnedCoach coach={coach} usedAi={usedAi} />
           <NextGuide
             complete={knowledgeUsed(last.metrics, slots)}
             missing={missingSlots(last.metrics.transcript, slots)}
@@ -248,7 +245,7 @@ export function Practice({ state, onFinished, onHome }: Props) {
           <section>
             <h3>一句跟读</h3>
             <p className="en">{recap.learnLine}</p>
-            <button className="btn ghost" type="button" onClick={() => speakEnglish(recap.learnLine)}>再听</button>
+            <button className="btn ghost" type="button" onClick={() => void speakEnglish(recap.learnLine)}>再听</button>
           </section>
           <section>
             <h3>明天就做这一件</h3>
