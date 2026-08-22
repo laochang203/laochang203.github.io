@@ -15,7 +15,7 @@ export function RecordPanel({ labelStart, labelStop, onFinished }: Props) {
   const [error, setError] = useState("");
   const [heard, setHeard] = useState("");
   const abortRef = useRef<AbortController | null>(null);
-  const listenRef = useRef<{ stop: () => void } | null>(null);
+  const listenRef = useRef<{ stop: () => Promise<string> } | null>(null);
   const transcriptRef = useRef("");
 
   useEffect(() => {
@@ -32,18 +32,19 @@ export function RecordPanel({ labelStart, labelStop, onFinished }: Props) {
     const abort = new AbortController();
     abortRef.current = abort;
     setLive(true);
-    listenRef.current = listenWhileSpeaking((finalText, interim) => {
-      transcriptRef.current = finalText;
-      setHeard([finalText, interim].filter(Boolean).join(" "));
+    listenRef.current = listenWhileSpeaking((text) => {
+      transcriptRef.current = text;
+      setHeard(text);
     });
     try {
       const result = await recordAudio((rms) => setLevel(rms), abort.signal);
-      listenRef.current.stop();
+      const flushed = await listenRef.current.stop();
+      const text = flushed || transcriptRef.current;
       setLive(false);
       setLevel(0);
-      onFinished(result, transcriptRef.current);
+      onFinished(result, text);
     } catch (e) {
-      listenRef.current?.stop();
+      await listenRef.current?.stop();
       setLive(false);
       setError(e instanceof Error && /NotAllowed|Permission/i.test(e.message)
         ? "请允许麦克风。iPhone 请用 Safari。"
